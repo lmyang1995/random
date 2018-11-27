@@ -11,7 +11,7 @@ import pickle
 import numpy as np
 import h5py
 from PIL import Image
-from utils import download_url, check_integrity
+from utils_2 import download_url, check_integrity
 
 
 class CIFAR10(data.Dataset):
