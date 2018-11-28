@@ -130,7 +130,7 @@ def add_model_s(index):
         lines = fp.readlines()
         if len(lines)==600:
             print('exist but finish')
-            return
+            return True
         else:
             elements = filename[:-4].split('_')[1:]
             stages = elements[0].split('-')
@@ -141,9 +141,10 @@ def add_model_s(index):
             args.growth = [int(gr) for gr in growth]
             args.bottleneck = [float(bo) for bo in bottleneck]
             print('exist and continue')
-            return
+            return False
     else:
         print('not exist')
+        return False
 
 
 def main(index):
@@ -156,7 +157,9 @@ def main(index):
         print(args.bottleneck)
         args.stages = [random.randint(1, 3) for i in range(times)]
         args.growth = [random.randint(2, 16) for i in range(times)]
-    add_model_s(index)
+    finish = add_model_s(index)
+    if finish:
+        return
     if len(args.stages) == 1:
         args.filename = ("%d_%d_%d_%.1f.txt" %
                          (index, args.stages[0], args.growth[0], args.bottleneck[0]))
