@@ -9,16 +9,13 @@ import shutil
 import time
 import math
 import warnings
-import models
-from utils import convert_model, measure_model
-import random
+# import models
+# import random
 import cfar_10_data as cfar
-import threading
+
 parser = argparse.ArgumentParser(description='PyTorch Condensed Convolutional Networks')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
-parser.add_argument('--model', default='condensenet', type=str, metavar='M',
-                    help='model to train the dataset')
 parser.add_argument('-j', '--workers', default=6, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('--epochs', default=600, type=int, metavar='N',
@@ -80,7 +77,8 @@ parser.add_argument('--convert-from', default=None, type=str, metavar='PATH',
                     help='path to saved checkpoint (default: none)')
 parser.add_argument('--evaluate-from', default=None, type=str, metavar='PATH',
                     help='path to saved checkpoint (default: none)')
-
+parser.add_argument('--model', default='resnet', type=str, metavar='M',
+                    help='model to train the dataset')
 args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 args.stages = list(map(int, args.stages.split('-')))
@@ -90,6 +88,7 @@ if args.condense_factor is None:
 # args.data == 'cifar10'
 if args.data == 'cifar10':
     args.num_classes = 10
+    # args.model = 'resnet'
 elif args.data == 'cifar100':
     args.num_classes = 100
 else:
@@ -98,19 +97,127 @@ else:
 warnings.filterwarnings("ignore")
 
 import torch
-import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-
+import torch.nn as nn
+import copy
+import os
+import operator
+from functools import reduce
+from cells import CellResNet, CellNAS
+import hashlib
+import collections
+import json
+import random
 torch.manual_seed(args.manual_seed)
 torch.cuda.manual_seed_all(args.manual_seed)
 
 best_prec1 = 100
-def add_model_s(index):
+class ArcResNet(nn.Module):
+    def __init__(self,
+                 init_channel,
+                 init_ks,
+                 n_class,
+                 num_layer_list,
+                 out_channel_list2D,
+                 kernel_size_list2D,
+                 stride_list,
+                 skip_connect_list,
+                 skip_kernel_size_list,
+                 **kwargs):
+        """
+        :param init_channel: type int, channels of initial convolution layer
+        :param init_ks: type int, kernel size of initial convolution layer
+        :param n_class: type int, number of class
+        :param num_layer_list: type 1D list, how many layers in each cell
+        :param out_channel_list2D: type 2D list, out channels for each cell
+        :param kernel_size_list2D: type 2D list, kernel size for each cell
+        :param stride_list: type 1D list, stride for each cell
+        :param skip_connect_list: type 1D list,
+        :param skip_kernel_size_list: type 1D list
+        """
+        super(ArcResNet, self).__init__()
+        assert len(num_layer_list) == len(out_channel_list2D), 'length of num_layer_list should equal ' \
+                                                                'to length of out channels_list2D'
+        self.init_channel = init_channel
+        self.init_ks = init_ks
+        self.n_class = n_class
+        self.num_layer_list = num_layer_list
+        self.out_channel_list2D = out_channel_list2D
+        self.kernel_size_list2D = kernel_size_list2D
+        self.stride_list = stride_list
+        self.skip_connect_list = skip_connect_list
+        self.skip_kernel_size_list = skip_kernel_size_list
+
+        # build network
+        self.init_conv = nn.Conv2d(3,
+                                   self.init_channel,
+                                   kernel_size=self.init_ks,
+                                   padding=self.init_ks // 2,
+                                   bias=False)
+        self.init_bn = nn.BatchNorm2d(self.init_channel)
+        self.layers = nn.Sequential()
+        in_channel = self.init_channel
+        for i, n in enumerate(self.num_layer_list):
+            self.layers.add_module('cell_%d' % i, CellResNet(num_layer=num_layer_list[i],
+                                                             in_channel=in_channel,
+                                                             out_channel_list=out_channel_list2D[i],
+                                                             kernel_size_list=kernel_size_list2D[i],
+                                                             stride=stride_list[i],
+                                                             skip_connect=skip_connect_list[i],
+                                                             skip_kernel_size=skip_kernel_size_list[i]))
+            in_channel = out_channel_list2D[i][-1]
+        self.global_pooling = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(in_channel, self.n_class)
+
+    def forward(self, x):
+        out = self.init_conv(x)
+        out = self.init_bn(out)
+        out = self.layers(out)
+        out = self.global_pooling(out)
+        out = self.fc(out.view(out.size(0), -1))
+        return out
+
+    def as_dict(self):
+        d = collections.OrderedDict()
+        d['init_channel'] = self.init_channel
+        d['init_ks'] = self.init_ks
+        d['n_class'] = self.n_class
+        d['num_layer_list'] = self.num_layer_list
+        d['out_channel_list2D'] = self.out_channel_list2D
+        d['kernel_size_list2D'] = self.kernel_size_list2D
+        d['stride_list'] = self.stride_list
+        d['skip_connect_list'] = self.skip_connect_list
+        d['skip_kernel_size_list'] = self.skip_kernel_size_list
+        return d
+
+    def save_param(self, dir_path='./'):
+        with open(os.path.join(dir_path, 'params.json'), 'w') as f:
+            json.dump(self.as_dict(), f)
+
+    def load_param(self, dir_path='./'):
+        assert os.path.exists(os.path.join(dir_path, 'params.json'))==True
+        with open(os.path.join(dir_path, 'params.json'), 'r') as f:
+            d = json.load(f)
+        self.__init__(**d)
+
+    @property
+    def md5name(self):
+        return hashlib.md5(json.dumps(self.as_dict()).encode('utf-8')).hexdigest()
+
+    def count_params(self):
+        n_params = sum([reduce(operator.mul, i.size(), 1) for i in self.parameters()]) / 1e6
+        print('#Param of Model: %.4f M' % n_params)
+        return n_params
+
+    def copy(self):
+        d = copy.deepcopy(self.as_dict())
+        return ArcResNet(**d)
+def add_model_s(index, model):
     global args
     os.makedirs(args.savedir, exist_ok=True)
     names = os.listdir(args.savedir)
@@ -130,72 +237,68 @@ def add_model_s(index):
         lines = fp.readlines()
         if len(lines)==args.epochs:
             print('exist but finish')
-            return True
+            return True, model
         else:
-            elements = filename[:-4].split('_')[1:]
-            stages = elements[0].split('-')
-            growth = elements[1].split('-')
-            bottleneck = elements[2].split('-')
-            # N = len(stages)
-            args.stages = [int(st) for st in stages]
-            args.growth = [int(gr) for gr in growth]
-            args.bottleneck = [float(bo) for bo in bottleneck]
+            model_dir = os.path.join(args.savedir, filename[:-4])
+            model.load_param(dir_path=model_dir)
+            # elements = filename[:-4].split('_')[1:]
+            # stages = elements[0].split('-')
+            # growth = elements[1].split('-')
+            # bottleneck = elements[2].split('-')
+            # # N = len(stages)
+            # args.stages = [int(st) for st in stages]
+            # args.growth = [int(gr) for gr in growth]
+            # args.bottleneck = [float(bo) for bo in bottleneck]
             print('exist and continue')
-            return False
+            return False, model
     else:
         print('not exist')
-        return False
-
+        return False, model
 
 def main(index):
     global args, best_prec1
     best_prec1 = 0
     args.start_epoch=0
     if args.all_random:
-        times = random.randint(1, 4)
-        args.bottleneck = [random.randint(1, 8) / 2 for i in range(times)]
-        print(args.bottleneck)
-        args.stages = [random.randint(1, 3) for i in range(times)]
-        args.growth = [random.randint(2, 16) for i in range(times)]
-    finish = add_model_s(index)
+        times = random.randint(2, 8)
+        num_layer_list = [random.randint(1, 4) for gg in range(times)]
+        stride_list = [random.randint(1, 2) for gg in range(times)]
+        while stride_list.count(2)>3:
+            stride_list = [random.randint(1, 2) for gg in range(times)]
+        ResNet18_ArcParams = dict(init_channel=random.randint(1, 6) * 8,
+                                  init_ks= random.choice([1, 3, 5]),
+                                  n_class=10,
+                                  num_layer_list=num_layer_list,
+                                  out_channel_list2D=[[random.randint(1, 12) * 8 for i in range(num_layer_list[gg])]
+                                                      for gg in range(times)],
+                                  kernel_size_list2D=[[random.choice([1, 3, 5]) for i in range(num_layer_list[gg])]
+                                                      for gg in range(times)],
+                                  stride_list=stride_list,
+                                  skip_connect_list=[random.choice([True, False]) for gg in range(times)],
+                                  skip_kernel_size_list=[random.choice([None, 1]) for gg in range(times)])
+    model = ArcResNet(**ResNet18_ArcParams)
+    finish, model = add_model_s(index, model)
     if finish:
         return
-    if len(args.stages) == 1:
-        args.filename = ("%d_%d_%d_%.1f.txt" %
-                         (index, args.stages[0], args.growth[0], args.bottleneck[0]))
-    elif len(args.stages) == 2:
-        args.filename = ("%d_%d-%d_%d-%d_%.1f-%.1f.txt" %
-                         (index, args.stages[0], args.stages[1], args.growth[0], args.growth[1],
-                          args.bottleneck[0], args.bottleneck[1]))
-    elif len(args.stages) == 3:
-        args.filename = ("%d_%d-%d-%d_%d-%d-%d_%.1f-%.1f-%.1f.txt" %
-                         (index, args.stages[0], args.stages[1], args.stages[2], args.growth[0], args.growth[1],
-                          args.growth[2], args.bottleneck[0], args.bottleneck[1], args.bottleneck[2]))
-    else:
-        args.filename = ("%d_%d-%d-%d-%d_%d-%d-%d-%d_%.1f-%.1f-%.1f-%.1f.txt" %
-                         (index, args.stages[0], args.stages[1], args.stages[2], args.stages[3], args.growth[0],
-                          args.growth[1],
-                          args.growth[2], args.growth[3], args.bottleneck[0], args.bottleneck[1],
-                          args.bottleneck[2],
-                          args.bottleneck[3]))
+    args.filename = ('%d_' % index) + model.md5name + '.txt'
+    model_dir = os.path.join(args.savedir, args.filename[:-4])
+    os.makedirs(model_dir, exist_ok=True)
+    model.save_param(dir_path=model_dir)
     print('<<<<=============================>>>>')
     print(args.filename)
     print('<<<<=============================>>>>')
-    model = getattr(models, args.model)(args)
+    # model = getattr(models, args.model)(args)
     print(model)
+    arch_para = model.as_dict()
     if args.data in ['cifar10', 'cifar100']:
         IMAGE_SIZE = 32
     else:
         IMAGE_SIZE = 224
 
     ### Create model
-    model = getattr(models, args.model)(args)
+    # model = getattr(models, args.model)(args)
 
-    if args.model.startswith('alexnet') or args.model.startswith('vgg'):
-        model.features = torch.nn.DataParallel(model.features)
-        model.cuda()
-    else:
-        model = torch.nn.DataParallel(model).cuda()
+    model = torch.nn.DataParallel(model).cuda()
 
     ### Define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda()
@@ -227,19 +330,19 @@ def main(index):
         #                                  transforms.ToTensor(),
         #                                  normalize,
         #                              ]))
-        train_set = cfar.CIFAR10('./data', train=True, num_valid=5000, valid=False,
+        train_set = cfar.CIFAR10('../data', train=True, num_valid=5000, valid=False,
                                  transform=transforms.Compose([
                                      transforms.RandomCrop(32, padding=4),
                                      transforms.RandomHorizontalFlip(),
                                      transforms.ToTensor(),
                                      normalize,
                                  ]))
-        test_set = datasets.CIFAR10('./data', train=False,
+        test_set = datasets.CIFAR10('../data', train=False,
                                    transform=transforms.Compose([
                                        transforms.ToTensor(),
                                        normalize,
                                    ]))
-        val_set = cfar.CIFAR10('./data', train=True, num_valid=5000, valid=True,
+        val_set = cfar.CIFAR10('../data', train=True, num_valid=5000, valid=True,
                                transform=transforms.Compose([
                                    transforms.ToTensor(),
                                    normalize,
@@ -299,6 +402,7 @@ def main(index):
 
     for epoch in range(args.start_epoch, args.epochs):
         ### Train for one epoch
+        print(arch_para)
         tr_prec1, tr_prec5, loss, lr = \
             train(train_loader, model, criterion, optimizer, epoch)
 
@@ -308,7 +412,7 @@ def main(index):
 
         ### Remember best prec@1 and save checkpoint
         is_best = val_prec1 > best_prec1
-        print(is_best, val_prec1, best_prec1)
+        # print(is_best, val_prec1, best_prec1)
         best_prec1 = max(val_prec1, best_prec1)
         model_filename = 'lastest.pth.tar'
         save_checkpoint({
@@ -320,14 +424,6 @@ def main(index):
         }, args, is_best, model_filename, "%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n" %
                                           (test_prec1, test_prec5, val_prec1, val_prec5, tr_prec1, tr_prec5, loss, lr))
 
-    ### Convert model and test
-    # model = model.cpu().module
-    # convert_model(model, args)
-    # model = nn.DataParallel(model).cuda()
-    # print(model)
-    # validate(val_loader, model, criterion)
-    # n_flops, n_params = measure_model(model, IMAGE_SIZE, IMAGE_SIZE)
-    # print('FLOPs: %.2fM, Params: %.2fM' % (n_flops / 1e6, n_params / 1e6))
     return
 
 
@@ -367,7 +463,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         target_var = torch.autograd.Variable(target)
 
         ### Compute output
-        output = model(input_var, progress)
+        output = model(input_var)
         loss = criterion(output, target_var)
 
         ### Add group lasso loss
@@ -550,13 +646,3 @@ if __name__ == '__main__':
         torch.manual_seed(args.manual_seed)
         torch.cuda.manual_seed_all(args.manual_seed)
         main(index)
-    # for i in range(steps):
-    #     torch.manual_seed(args.manual_seed)
-    #     torch.cuda.manual_seed_all(args.manual_seed)
-    #     if args.all_random:
-    #         n = random.randint(1, 4)
-    #         args.bottleneck = [random.randint(1, 8) /2 for i in range(n)]
-    #         print (args.bottleneck)
-    #         args.stages = [random.randint(1, 3) for i in range(n)]
-    #         args.growth = [random.randint(2, 16) for i in range(n)]
-    #     main()
