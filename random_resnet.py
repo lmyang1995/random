@@ -1,7 +1,3 @@
-"""
-@copyright: Bigeye Lab
-
-"""
 from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
@@ -334,19 +330,19 @@ def main(index):
         #                                  transforms.ToTensor(),
         #                                  normalize,
         #                              ]))
-        train_set = cfar.CIFAR10('../data', train=True, num_valid=5000, valid=False,
+        train_set = cfar.CIFAR10('./data', train=True, num_valid=5000, valid=False,
                                  transform=transforms.Compose([
                                      transforms.RandomCrop(32, padding=4),
                                      transforms.RandomHorizontalFlip(),
                                      transforms.ToTensor(),
                                      normalize,
                                  ]))
-        test_set = datasets.CIFAR10('../data', train=False,
+        test_set = datasets.CIFAR10('./data', train=False,
                                    transform=transforms.Compose([
                                        transforms.ToTensor(),
                                        normalize,
                                    ]))
-        val_set = cfar.CIFAR10('../data', train=True, num_valid=5000, valid=True,
+        val_set = cfar.CIFAR10('./data', train=True, num_valid=5000, valid=True,
                                transform=transforms.Compose([
                                    transforms.ToTensor(),
                                    normalize,
