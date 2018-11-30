@@ -72,7 +72,7 @@ class CellResNet(nn.Module):
 
         if stride != 1 or self.skip_connect:
             if self.skip_kernel_size is None:
-                if self.init_channel != self.cell_out_channel:
+                if (self.init_channel != self.cell_out_channel) or (stride != 1):
                     self.downsample = ConvBn(self.init_channel,
                                              self.cell_out_channel,
                                              kernel_size=1,
