@@ -647,6 +647,6 @@ if __name__ == '__main__':
     begin = int(args.range.split('-')[0])
     end = int(args.range.split('-')[1]) + 1
     for index in range(begin, end):
-        torch.manual_seed(args.manual_seed)
-        torch.cuda.manual_seed_all(args.manual_seed)
+        # torch.manual_seed(args.manual_seed)
+        # torch.cuda.manual_seed_all(args.manual_seed)
         main(index)

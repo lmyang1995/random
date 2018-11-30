@@ -1,7 +1,3 @@
-"""
-@copyright: Bigeye Lab
-
-"""
 from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
@@ -551,8 +547,8 @@ if __name__ == '__main__':
     begin = int(args.range.split('-')[0])
     end = int(args.range.split('-')[1]) + 1
     for index in range(begin, end):
-        torch.manual_seed(args.manual_seed)
-        torch.cuda.manual_seed_all(args.manual_seed)
+        # torch.manual_seed(args.manual_seed)
+        # torch.cuda.manual_seed_all(args.manual_seed)
         main(index)
     # for i in range(steps):
     #     torch.manual_seed(args.manual_seed)
