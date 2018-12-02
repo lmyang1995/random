@@ -78,7 +78,7 @@ parser.add_argument('--id', default=0, type=int, metavar='N',
 args = parser.parse_args()
 os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 args.data = "cifar10"
-args.savedir ==args.savedir + '%d' %args.id
+args.savedir = args.savedir + '%d' % args.id
 if args.data == 'cifar10':
     args.num_classes = 10
 else:
