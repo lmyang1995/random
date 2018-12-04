@@ -313,7 +313,7 @@ def main():
         is_best = val_prec1 > best_prec1
         print(is_best, val_prec1, best_prec1)
         best_prec1 = max(val_prec1, best_prec1)
-        model_filename = 'checkpoint_%03d.pth.tar' % epoch
+        model_filename = 'lastest.pth.tar'
         save_checkpoint({
             'epoch': epoch,
             'model': args.model,
@@ -339,7 +339,7 @@ def save_checkpoint(state, args, is_best, filename, result):
     torch.save(state, model_filename)
     with open(latest_filename, 'w') as fout:
         fout.write(model_filename)
-    if True:
+    if args.no_save_model:
         shutil.move(model_filename, best_filename)
     elif is_best:
         shutil.copyfile(model_filename, best_filename)
